@@ -207,20 +207,35 @@ def ask_deepseek_category(category_name, articles):
         articles_text += f"{i}. {title}\nรายละเอียด: {desc}\nแหล่งข่าว: {source}\n\n"
 
     if category_name == "โรคระบาด":
-        prompt = f"คุณเป็นนักระบาดวิทยา วิเคราะห์ข่าวนี้:\n{articles_text}\nตอบ: 1)โรคที่น่ากังวลที่สุด 2)แนวโน้ม 3)ผลกระทบไทย 4)คำแนะนำ ตอบภาษาไทย"
-        max_tokens = 1500
+        role = "คุณเป็นนักระบาดวิทยา"
+        task = "ตอบ: 1)โรคที่น่ากังวลที่สุด 2)แนวโน้ม 3)ผลกระทบไทย 4)คำแนะนำ ตอบภาษาไทย"
+        max_tokens = 1800
     elif category_name == "เทคโนโลยี AI":
-        prompt = f"คุณเป็นนักวิเคราะห์เทคโนโลยี วิเคราะห์ข่าวต่อไปนี้:\n{articles_text}\nตอบภาษาไทย 3 หัวข้อ:\n1) พัฒนาการ/เทคโนโลยีที่น่าจับตาที่สุด\n2) ผลกระทบต่อการทำงาน/การศึกษา/ชีวิตประจำวัน\n3) ความเสี่ยงหรือข้อควรระวัง"
-        max_tokens = 800
-    elif category_name == "สงคราม":
-        prompt = f"คุณเป็นนักวิเคราะห์ภูมิรัฐศาสตร์ วิเคราะห์ข่าวต่อไปนี้:\n{articles_text}\nตอบภาษาไทย 3 หัวข้อ:\n1) สถานการณ์ล่าสุดที่สำคัญที่สุด\n2) แนวโน้ม\n3) ผลกระทบต่อเศรษฐกิจโลกหรือไทย"
+        role = "คุณเป็นนักวิเคราะห์เทคโนโลยี"
+        task = "ตอบภาษาไทย 3 หัวข้อ:\n1) พัฒนาการ/เทคโนโลยีที่น่าจับตาที่สุด\n2) ผลกระทบต่อการทำงาน/การศึกษา/ชีวิตประจำวัน\n3) ความเสี่ยงหรือข้อควรระวัง"
         max_tokens = 1000
+    elif category_name == "สงคราม":
+        role = "คุณเป็นนักวิเคราะห์ภูมิรัฐศาสตร์"
+        task = "ตอบภาษาไทย 3 หัวข้อ:\n1) สถานการณ์ล่าสุดที่สำคัญที่สุด\n2) แนวโน้ม\n3) ผลกระทบต่อเศรษฐกิจโลกหรือไทย"
+        max_tokens = 1200
     elif category_name == "ภัยพิบัติ":
-        prompt = f"คุณเป็นผู้เชี่ยวชาญภัยพิบัติ วิเคราะห์ข่าวต่อไปนี้:\n{articles_text}\nตอบภาษาไทย 3 หัวข้อ:\n1) ความรุนแรง/พื้นที่ที่ได้รับผลกระทบมากที่สุด\n2) แนวโน้มความเสี่ยงที่ต้องจับตา\n3) บทเรียนหรือข้อเตือนภัยสำหรับไทย"
-        max_tokens = 800
+        role = "คุณเป็นผู้เชี่ยวชาญภัยพิบัติ"
+        task = "ตอบภาษาไทย 3 หัวข้อ:\n1) ความรุนแรง/พื้นที่ที่ได้รับผลกระทบมากที่สุด\n2) แนวโน้มความเสี่ยงที่ต้องจับตา\n3) บทเรียนหรือข้อเตือนภัยสำหรับไทย"
+        max_tokens = 1000
     else:
-        prompt = f"คุณเป็นนักวิเคราะห์ข่าวทั่วไป วิเคราะห์ข่าวหมวด {category_name} ต่อไปนี้:\n{articles_text}\nตอบภาษาไทยตาม 3 หัวข้อดังนี้:\n1) ประเด็นสำคัญที่สุด\n2) เรื่องที่น่าสนใจ/น่าติดตาม\n3) ผลกระทบหรือประโยชน์ต่อคนไทย"
-        max_tokens = 800
+        role = "คุณเป็นนักวิเคราะห์ข่าวทั่วไป"
+        task = "ตอบภาษาไทยตาม 3 หัวข้อดังนี้:\n1) ประเด็นสำคัญที่สุด\n2) เรื่องที่น่าสนใจ/น่าติดตาม\n3) ผลกระทบหรือประโยชน์ต่อคนไทย"
+        max_tokens = 1000
+
+    prompt = (
+        f"{role} วิเคราะห์ข่าวต่อไปนี้ (หมวด {category_name}):\n{articles_text}\n"
+        f"{task}\n\n"
+        f"นอกจากนี้ ให้สรุปข่าวแต่ละข้อ (ตามลำดับข้อ 1 ถึง {len(articles)} ด้านบน) เป็นภาษาไทยสั้นกระชับ "
+        f"ไม่เกิน 15 คำต่อข้อ อ่านแล้วเข้าใจทันที ไม่ใช่แปลตรงตัวจากหัวข้อภาษาอังกฤษ\n\n"
+        f"ตอบกลับเป็น JSON เท่านั้น ห้ามมีข้อความอื่นนอก JSON รูปแบบนี้เป๊ะๆ:\n"
+        f'{{"analysis": "เนื้อหาวิเคราะห์ตามหัวข้อข้างต้นทั้งหมด", "summaries": ["สรุปข่าวข้อ 1", "สรุปข่าวข้อ 2", ...]}}\n'
+        f"summaries ต้องมีจำนวนสมาชิกเท่ากับจำนวนข่าวพอดี ({len(articles)} ข้อ) เรียงลำดับตรงกับข่าวด้านบน"
+    )
 
     try:
         r = requests.post(
@@ -230,13 +245,20 @@ def ask_deepseek_category(category_name, articles):
                 "model": "deepseek-chat",
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.7,
-                "max_tokens": max_tokens
+                "max_tokens": max_tokens,
+                "response_format": {"type": "json_object"}
             },
-            timeout=30
+            timeout=45
         )
-        return r.json()['choices'][0]['message']['content']
+        raw = r.json()['choices'][0]['message']['content']
+        parsed = json.loads(raw)
+        analysis = parsed.get("analysis") or ""
+        summaries = parsed.get("summaries") or []
+        if not isinstance(summaries, list):
+            summaries = []
+        return {"analysis": analysis, "summaries": [str(s) for s in summaries]}
     except Exception as e:
-        return f"เกิดข้อผิดพลาดในการวิเคราะห์ด้วย AI: {str(e)}"
+        return {"analysis": f"เกิดข้อผิดพลาดในการวิเคราะห์ด้วย AI: {str(e)}", "summaries": []}
 
 def main():
     print("="*50)
@@ -267,16 +289,20 @@ def main():
             
         articles = grouped[cat_name]
         print(f"กำลังวิเคราะห์หมวด '{cat_name}' ด้วย DeepSeek AI ({len(articles)} ข่าว)...")
-        analysis_text = ask_deepseek_category(cat_name, articles)
-        
+        result = ask_deepseek_category(cat_name, articles)
+        analysis_text = result.get("analysis", "")
+        summaries = result.get("summaries", [])
+
         items_list = []
-        for art in articles:
+        for i, art in enumerate(articles):
+            summary_th = summaries[i] if i < len(summaries) and summaries[i] else None
             items_list.append({
                 "title": art.get('title', ''),
+                "summary_th": summary_th,   # สรุปสั้นภาษาไทย จาก DeepSeek — None ถ้า AI ตอบไม่ครบ/parse ไม่ได้
                 "source": art.get('source', ''),
                 "url": art.get('url', '')
             })
-            
+
         categories_list.append({
             "name": cat_name,
             "icon": CATEGORY_ICONS.get(cat_name, "📰"),
