@@ -4,6 +4,7 @@ from unittest.mock import patch, MagicMock
 
 os.environ.setdefault("DEEPSEEK_API_KEY", "dummy")
 os.environ.setdefault("NEWSAPI_KEY", "dummy")
+os.environ.setdefault("GROQ_API_KEY", "dummy")
 import news_digest
 
 
@@ -35,8 +36,18 @@ def test_proofread_falls_back_on_error():
     assert summaries == ["a"]
 
 
+def test_proofread_skips_when_no_groq_key():
+    with patch.object(news_digest, "GROQ_API_KEY", None), \
+         patch("news_digest.requests.post") as mock_post:
+        analysis, summaries = news_digest.proofread_thai("ต้นฉบับ", ["a"])
+    mock_post.assert_not_called()
+    assert analysis == "ต้นฉบับ"
+    assert summaries == ["a"]
+
+
 if __name__ == "__main__":
     test_proofread_returns_fixed_text()
     test_proofread_falls_back_on_mismatched_length()
     test_proofread_falls_back_on_error()
+    test_proofread_skips_when_no_groq_key()
     print("OK: proofread_thai self-checks passed")

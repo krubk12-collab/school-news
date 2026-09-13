@@ -9,8 +9,11 @@ import zoneinfo
 # Read API keys from environment variables
 API_KEY = os.environ["DEEPSEEK_API_KEY"]
 NEWSAPI_KEY = os.environ["NEWSAPI_KEY"]
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")  # ไม่บังคับ — ถ้าไม่มีก็ข้ามขั้นพิสูจน์อักษร
 
 DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions"
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_PROOFREAD_MODEL = "qwen/qwen3.8-27b"  # เช็ค https://api.groq.com/openai/v1/models ถ้าโมเดลนี้หายไป
 TRUSTED_DOMAINS = "reuters.com,apnews.com,bbc.com,aljazeera.com,theguardian.com,cnn.com,npr.org"
 
 DISEASE_QUERIES = [
@@ -261,7 +264,11 @@ def ask_deepseek_category(category_name, articles):
         return {"analysis": f"เกิดข้อผิดพลาดในการวิเคราะห์ด้วย AI: {str(e)}", "summaries": []}
 
 def proofread_thai(analysis, summaries):
-    """ตรวจตัวสะกด/วรรณยุกต์/ไวยากรณ์ไทยอีกรอบก่อนเผยแพร่ขึ้นเว็บ (ไม่แก้เนื้อหา)"""
+    """ตรวจตัวสะกด/วรรณยุกต์/ไวยากรณ์ไทยอีกรอบก่อนเผยแพร่ขึ้นเว็บ (ไม่แก้เนื้อหา)
+    ใช้ Groq (ฟรี) + Qwen แทน DeepSeek — คนละโมเดลกับตัวที่เขียนต้นฉบับ ตรวจข้ามกันได้ตรงกว่า และไม่กิน quota DeepSeek เพิ่ม"""
+    if not GROQ_API_KEY:
+        return analysis, summaries
+
     payload = {"analysis": analysis, "summaries": summaries}
     prompt = (
         "ตรวจและแก้ตัวสะกด วรรณยุกต์ และไวยากรณ์ภาษาไทยใน JSON นี้ให้ถูกต้อง "
@@ -271,13 +278,12 @@ def proofread_thai(analysis, summaries):
     )
     try:
         r = requests.post(
-            DEEPSEEK_URL,
-            headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
+            GROQ_URL,
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
             json={
-                "model": "deepseek-chat",
+                "model": GROQ_PROOFREAD_MODEL,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0,
-                "max_tokens": 2000,
                 "response_format": {"type": "json_object"}
             },
             timeout=45
