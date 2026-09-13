@@ -309,23 +309,21 @@ def ask_deepseek_category(category_name, articles):
         return {"analysis": f"เกิดข้อผิดพลาดในการวิเคราะห์ด้วย AI: {str(e)}", "summaries": []}
 
 def proofread_thai(analysis, summaries):
-    """ตรวจ+ขัดภาษาไทยให้เป็นสำนวนข่าวมืออาชีพ และจัดลำดับความสำคัญของข่าวใหม่ ก่อนเผยแพร่ขึ้นเว็บ
+    """ตรวจ+ขัดภาษาไทยให้เป็นสำนวนข่าวมืออาชีพก่อนเผยแพร่ขึ้นเว็บ (ไม่แก้เนื้อหา/ไม่สลับลำดับ)
     ใช้ Groq (ฟรี) + Qwen แทน DeepSeek — คนละโมเดลกับตัวที่เขียนต้นฉบับ ตรวจข้ามกันได้ตรงกว่า และไม่กิน quota DeepSeek เพิ่ม
-    คืนค่า (analysis, summaries, order) — order คือลำดับตำแหน่งเดิม (0-based) ที่ควรใช้แสดงผลจริง"""
-    fallback_order = list(range(len(summaries)))
+    หมายเหตุ: เคยลองให้ทำหน้าที่ "จัดลำดับความสำคัญ" ในคำขอเดียวกันด้วย แต่โมเดลสับสน
+    (ตอบเป็นคำอธิบายการแก้ไขแทนเนื้อหาจริง + สลับตำแหน่ง summaries ผิด) เลยตัดออก ให้ทำเรื่องเดียวให้ชัวร์"""
     if not GROQ_API_KEY or not summaries:
-        return analysis, summaries, fallback_order
+        return analysis, summaries
 
     payload = {"analysis": analysis, "summaries": summaries}
     prompt = (
         "ตรวจและแก้ตัวสะกด วรรณยุกต์ ไวยากรณ์ภาษาไทยใน JSON นี้ให้ถูกต้อง "
         "พร้อมขัดสำนวนให้เป็นภาษาข่าวมืออาชีพ กระชับ น่าเชื่อถือ (ไม่ใช่แปลตรงตัวคำต่อคำ) "
-        "ห้ามเปลี่ยนข้อเท็จจริง ตัวเลข หรือความหมายเดิมเด็ดขาด\n"
-        "ห้ามสลับลำดับ summaries เอง — summaries ต้องเรียงตรงกับตำแหน่งข่าวเดิมทุกประการ "
-        "(ตำแหน่งที่ 0 คือข่าวเดิมข้อที่ 0) ส่วนลำดับที่ควรใช้แสดงผลจริงให้จัดลำดับความสำคัญ/น่าสนใจจากมากไปน้อย "
-        "แล้วระบุแยกไว้ที่ฟิลด์ order เท่านั้น\n"
-        "ตอบกลับเป็น JSON รูปแบบนี้เป๊ะๆ:\n"
-        '{"analysis": "...", "summaries": ["...", "..."], "order": [ตำแหน่งเดิมเรียงตามลำดับใหม่ ต้องมีครบทุกตำแหน่งไม่ซ้ำ]}\n\n'
+        "ห้ามเปลี่ยนข้อเท็จจริง ตัวเลข หรือความหมายเดิมเด็ดขาด และห้ามสลับลำดับ summaries เด็ดขาด "
+        "(ตำแหน่งที่ 0 ต้องเป็นข่าวเดิมข้อที่ 0 เสมอ)\n"
+        "ตอบกลับเป็น JSON รูปแบบเดิมเป๊ะๆ เท่านั้น ห้ามมีข้อความอื่นนอก JSON "
+        "(คีย์ analysis และ summaries จำนวนสมาชิกเท่าเดิม):\n\n"
         + json.dumps(payload, ensure_ascii=False)
     )
     try:
@@ -346,12 +344,9 @@ def proofread_thai(analysis, summaries):
         fixed_summaries = parsed.get("summaries") or summaries
         if not isinstance(fixed_summaries, list) or len(fixed_summaries) != len(summaries):
             fixed_summaries = summaries
-        order = parsed.get("order")
-        if not isinstance(order, list) or sorted(order) != fallback_order:
-            order = fallback_order
-        return fixed_analysis, [str(s) for s in fixed_summaries], order
+        return fixed_analysis, [str(s) for s in fixed_summaries]
     except Exception:
-        return analysis, summaries, fallback_order  # พิสูจน์อักษรพลาด ใช้ต้นฉบับแทน ไม่ทำให้ทั้งระบบล่ม
+        return analysis, summaries  # พิสูจน์อักษรพลาด ใช้ต้นฉบับแทน ไม่ทำให้ทั้งระบบล่ม
 
 def main():
     print("="*50)
@@ -388,11 +383,7 @@ def main():
         result = ask_deepseek_category(cat_name, articles)
         analysis_text = result.get("analysis", "")
         summaries = result.get("summaries", [])
-        analysis_text, summaries, order = proofread_thai(analysis_text, summaries)
-
-        if len(order) == len(articles):
-            articles = [articles[i] for i in order]
-            summaries = [summaries[i] for i in order]
+        analysis_text, summaries = proofread_thai(analysis_text, summaries)
 
         items_list = []
         for i, art in enumerate(articles):

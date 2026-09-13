@@ -8,18 +8,15 @@ os.environ.setdefault("GROQ_API_KEY", "dummy")
 import news_digest
 
 
-def test_proofread_returns_fixed_text_and_order():
+def test_proofread_returns_fixed_text():
     fake_response = MagicMock()
     fake_response.json.return_value = {
-        "choices": [{"message": {"content": json.dumps(
-            {"analysis": "แก้แล้ว", "summaries": ["ก", "ข"], "order": [1, 0]}
-        )}}]
+        "choices": [{"message": {"content": json.dumps({"analysis": "แก้แล้ว", "summaries": ["ก", "ข"]})}}]
     }
     with patch("news_digest.requests.post", return_value=fake_response):
-        analysis, summaries, order = news_digest.proofread_thai("ผิด", ["a", "b"])
+        analysis, summaries = news_digest.proofread_thai("ผิด", ["a", "b"])
     assert analysis == "แก้แล้ว"
     assert summaries == ["ก", "ข"]
-    assert order == [1, 0]
 
 
 def test_proofread_falls_back_on_mismatched_length():
@@ -28,39 +25,24 @@ def test_proofread_falls_back_on_mismatched_length():
         "choices": [{"message": {"content": json.dumps({"analysis": "แก้แล้ว", "summaries": ["ก"]})}}]
     }
     with patch("news_digest.requests.post", return_value=fake_response):
-        analysis, summaries, order = news_digest.proofread_thai("ผิด", ["a", "b"])
+        analysis, summaries = news_digest.proofread_thai("ผิด", ["a", "b"])
     assert summaries == ["a", "b"]
-    assert order == [0, 1]  # ไม่มี order ใน response -> fallback ลำดับเดิม
-
-
-def test_proofread_falls_back_on_invalid_order():
-    fake_response = MagicMock()
-    fake_response.json.return_value = {
-        "choices": [{"message": {"content": json.dumps(
-            {"analysis": "แก้แล้ว", "summaries": ["ก", "ข"], "order": [0, 0]}  # ซ้ำ ไม่ครบ -> ไม่ valid
-        )}}]
-    }
-    with patch("news_digest.requests.post", return_value=fake_response):
-        analysis, summaries, order = news_digest.proofread_thai("ผิด", ["a", "b"])
-    assert order == [0, 1]
 
 
 def test_proofread_falls_back_on_error():
     with patch("news_digest.requests.post", side_effect=Exception("boom")):
-        analysis, summaries, order = news_digest.proofread_thai("ต้นฉบับ", ["a"])
+        analysis, summaries = news_digest.proofread_thai("ต้นฉบับ", ["a"])
     assert analysis == "ต้นฉบับ"
     assert summaries == ["a"]
-    assert order == [0]
 
 
 def test_proofread_skips_when_no_groq_key():
     with patch.object(news_digest, "GROQ_API_KEY", None), \
          patch("news_digest.requests.post") as mock_post:
-        analysis, summaries, order = news_digest.proofread_thai("ต้นฉบับ", ["a"])
+        analysis, summaries = news_digest.proofread_thai("ต้นฉบับ", ["a"])
     mock_post.assert_not_called()
     assert analysis == "ต้นฉบับ"
     assert summaries == ["a"]
-    assert order == [0]
 
 
 def test_reclassify_moves_offtopic_article_to_general():
@@ -86,9 +68,8 @@ def test_reclassify_falls_back_on_error():
 
 
 if __name__ == "__main__":
-    test_proofread_returns_fixed_text_and_order()
+    test_proofread_returns_fixed_text()
     test_proofread_falls_back_on_mismatched_length()
-    test_proofread_falls_back_on_invalid_order()
     test_proofread_falls_back_on_error()
     test_proofread_skips_when_no_groq_key()
     test_reclassify_moves_offtopic_article_to_general()
