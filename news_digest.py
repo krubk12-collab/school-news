@@ -360,6 +360,10 @@ def main():
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(output_data, f, ensure_ascii=False, indent=2)
             print(f"บันทึกไฟล์สำเร็จ: {path}")
+        # รายการวันที่ให้แถบ "ข่าวย้อนหลัง" ใน news.html (ไฟล์ชื่อแบบ 2569-09-13.json ยาว 15 ตัวอักษร)
+        dates = sorted((f[:-5] for f in os.listdir("data") if len(f) == 15 and f[:4].isdigit() and f.endswith(".json")), reverse=True)
+        with open("data/index.json", "w", encoding="utf-8") as f:
+            json.dump(dates, f)
         with open("data/usage.jsonl", "a", encoding="utf-8") as f:
             f.write(json.dumps({"generated_at": now.isoformat(), "articles_raw": len(raw_news),
                                 "articles": len(news), "failed_categories": failed, **usage}, ensure_ascii=False) + "\n")
