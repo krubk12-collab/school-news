@@ -174,6 +174,49 @@ def group_by_category(news):
         grouped[cat].append(n)
     return grouped
 
+def reclassify_categories(news):
+    """เช็คหมวดหมู่ข่าวจริงด้วย Qwen (ผ่าน Groq) แทนป้ายที่ติดตอนดึงจาก NewsAPI
+    (ป้ายเดิมเดาจาก 'query ไหนดึงมันมา' ไม่ได้เช็คเนื้อหาจริง ทำให้ข่าวกีฬา/บันเทิงหลุดเข้าหมวดเฉพาะทางได้)"""
+    if not GROQ_API_KEY or not news:
+        return news
+
+    categories = list(CATEGORY_ICONS.keys())
+    lines = []
+    for i, n in enumerate(news):
+        title = (n.get('title') or '').replace('\n', ' ')
+        desc = (n.get('desc') or '').replace('\n', ' ')
+        lines.append(f"{i}: {title} — {desc}")
+    articles_block = "\n".join(lines)
+
+    prompt = (
+        "ต่อไปนี้คือหัวข้อข่าวภาษาอังกฤษพร้อมคำโปรย มีดัชนีกำกับแต่ละข่าว "
+        f"ให้จัดหมวดหมู่แต่ละข่าวตามเนื้อหาจริง เลือกได้เฉพาะจาก 8 หมวดนี้เท่านั้น: {', '.join(categories)}\n"
+        "ถ้าข่าวไม่เข้าข่ายหมวดเฉพาะทางใดเลย (เช่น กีฬา บันเทิง ไลฟ์สไตล์ คดีอาชญากรรมทั่วไป) ให้จัดเป็น \"ทั่วไป\"\n"
+        "ตอบกลับเป็น JSON เท่านั้น รูปแบบ {\"0\": \"ชื่อหมวด\", \"1\": \"ชื่อหมวด\", ...} "
+        f"ต้องมีครบทุกดัชนีตั้งแต่ 0 ถึง {len(news) - 1}\n\nรายการข่าว:\n{articles_block}"
+    )
+    try:
+        r = requests.post(
+            GROQ_URL,
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+            json={
+                "model": GROQ_PROOFREAD_MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0,
+                "response_format": {"type": "json_object"}
+            },
+            timeout=60
+        )
+        raw = r.json()['choices'][0]['message']['content']
+        mapping = json.loads(raw)
+        for i, n in enumerate(news):
+            cat = mapping.get(str(i))
+            if cat in categories:
+                n["cat"] = cat
+        return news
+    except Exception:
+        return news  # จัดหมวดใหม่พลาด ใช้ป้ายเดิมจาก NewsAPI แทน ไม่ทำให้ pipeline ล่ม
+
 def classify_disease_type(articles):
     cats = {
         "ไวรัสทางเดินหายใจ": ["COVID", "flu", "H5N1", "H10N3", "respiratory", "influenza"],
@@ -233,6 +276,8 @@ def ask_deepseek_category(category_name, articles):
     prompt = (
         f"{role} วิเคราะห์ข่าวต่อไปนี้ (หมวด {category_name}):\n{articles_text}\n"
         f"{task}\n\n"
+        f"ในส่วนบทวิเคราะห์ ต้องกล่าวถึงทุกประเด็น/เหตุการณ์ที่ปรากฏในข่าวด้านบนอย่างน้อยหนึ่งครั้ง "
+        f"อนุญาตให้รวมข่าวที่รายงานเรื่องเดียวกันจากหลายสำนักไว้เป็นประเด็นเดียวได้ แต่ห้ามละเว้นเหตุการณ์ใดไปทั้งหมด\n\n"
         f"นอกจากนี้ ให้สรุปข่าวแต่ละข้อ (ตามลำดับข้อ 1 ถึง {len(articles)} ด้านบน) เป็นภาษาไทยสั้นกระชับ "
         f"ไม่เกิน 15 คำต่อข้อ อ่านแล้วเข้าใจทันที ไม่ใช่แปลตรงตัวจากหัวข้อภาษาอังกฤษ\n\n"
         f"ตอบกลับเป็น JSON เท่านั้น ห้ามมีข้อความอื่นนอก JSON รูปแบบนี้เป๊ะๆ:\n"
@@ -264,16 +309,23 @@ def ask_deepseek_category(category_name, articles):
         return {"analysis": f"เกิดข้อผิดพลาดในการวิเคราะห์ด้วย AI: {str(e)}", "summaries": []}
 
 def proofread_thai(analysis, summaries):
-    """ตรวจตัวสะกด/วรรณยุกต์/ไวยากรณ์ไทยอีกรอบก่อนเผยแพร่ขึ้นเว็บ (ไม่แก้เนื้อหา)
-    ใช้ Groq (ฟรี) + Qwen แทน DeepSeek — คนละโมเดลกับตัวที่เขียนต้นฉบับ ตรวจข้ามกันได้ตรงกว่า และไม่กิน quota DeepSeek เพิ่ม"""
-    if not GROQ_API_KEY:
-        return analysis, summaries
+    """ตรวจ+ขัดภาษาไทยให้เป็นสำนวนข่าวมืออาชีพ และจัดลำดับความสำคัญของข่าวใหม่ ก่อนเผยแพร่ขึ้นเว็บ
+    ใช้ Groq (ฟรี) + Qwen แทน DeepSeek — คนละโมเดลกับตัวที่เขียนต้นฉบับ ตรวจข้ามกันได้ตรงกว่า และไม่กิน quota DeepSeek เพิ่ม
+    คืนค่า (analysis, summaries, order) — order คือลำดับตำแหน่งเดิม (0-based) ที่ควรใช้แสดงผลจริง"""
+    fallback_order = list(range(len(summaries)))
+    if not GROQ_API_KEY or not summaries:
+        return analysis, summaries, fallback_order
 
     payload = {"analysis": analysis, "summaries": summaries}
     prompt = (
-        "ตรวจและแก้ตัวสะกด วรรณยุกต์ และไวยากรณ์ภาษาไทยใน JSON นี้ให้ถูกต้อง "
-        "ห้ามเปลี่ยนเนื้อหา ความหมาย หรือโครงสร้างประโยค แก้เฉพาะจุดที่สะกดผิดเท่านั้น "
-        "ตอบกลับเป็น JSON รูปแบบเดิมเป๊ะๆ (คีย์ analysis และ summaries จำนวนสมาชิกเท่าเดิม):\n\n"
+        "ตรวจและแก้ตัวสะกด วรรณยุกต์ ไวยากรณ์ภาษาไทยใน JSON นี้ให้ถูกต้อง "
+        "พร้อมขัดสำนวนให้เป็นภาษาข่าวมืออาชีพ กระชับ น่าเชื่อถือ (ไม่ใช่แปลตรงตัวคำต่อคำ) "
+        "ห้ามเปลี่ยนข้อเท็จจริง ตัวเลข หรือความหมายเดิมเด็ดขาด\n"
+        "ห้ามสลับลำดับ summaries เอง — summaries ต้องเรียงตรงกับตำแหน่งข่าวเดิมทุกประการ "
+        "(ตำแหน่งที่ 0 คือข่าวเดิมข้อที่ 0) ส่วนลำดับที่ควรใช้แสดงผลจริงให้จัดลำดับความสำคัญ/น่าสนใจจากมากไปน้อย "
+        "แล้วระบุแยกไว้ที่ฟิลด์ order เท่านั้น\n"
+        "ตอบกลับเป็น JSON รูปแบบนี้เป๊ะๆ:\n"
+        '{"analysis": "...", "summaries": ["...", "..."], "order": [ตำแหน่งเดิมเรียงตามลำดับใหม่ ต้องมีครบทุกตำแหน่งไม่ซ้ำ]}\n\n'
         + json.dumps(payload, ensure_ascii=False)
     )
     try:
@@ -294,9 +346,12 @@ def proofread_thai(analysis, summaries):
         fixed_summaries = parsed.get("summaries") or summaries
         if not isinstance(fixed_summaries, list) or len(fixed_summaries) != len(summaries):
             fixed_summaries = summaries
-        return fixed_analysis, [str(s) for s in fixed_summaries]
+        order = parsed.get("order")
+        if not isinstance(order, list) or sorted(order) != fallback_order:
+            order = fallback_order
+        return fixed_analysis, [str(s) for s in fixed_summaries], order
     except Exception:
-        return analysis, summaries  # พิสูจน์อักษรพลาด ใช้ต้นฉบับแทน ไม่ทำให้ทั้งระบบล่ม
+        return analysis, summaries, fallback_order  # พิสูจน์อักษรพลาด ใช้ต้นฉบับแทน ไม่ทำให้ทั้งระบบล่ม
 
 def main():
     print("="*50)
@@ -311,7 +366,10 @@ def main():
         sys.exit(1)
 
     print(f"ดึงข้อมูลข่าวเสร็จสิ้น: ทั้งหมด {len(news)} ข่าว")
-    
+
+    print("กำลังตรวจสอบ/จัดหมวดหมู่ข่าวใหม่ด้วย Qwen...")
+    news = reclassify_categories(news)
+
     # จัดกลุ่มตามหมวดหมู่ภาษาไทย
     grouped = group_by_category(news)
     
@@ -330,7 +388,11 @@ def main():
         result = ask_deepseek_category(cat_name, articles)
         analysis_text = result.get("analysis", "")
         summaries = result.get("summaries", [])
-        analysis_text, summaries = proofread_thai(analysis_text, summaries)
+        analysis_text, summaries, order = proofread_thai(analysis_text, summaries)
+
+        if len(order) == len(articles):
+            articles = [articles[i] for i in order]
+            summaries = [summaries[i] for i in order]
 
         items_list = []
         for i, art in enumerate(articles):
