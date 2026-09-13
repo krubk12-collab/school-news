@@ -260,6 +260,38 @@ def ask_deepseek_category(category_name, articles):
     except Exception as e:
         return {"analysis": f"เกิดข้อผิดพลาดในการวิเคราะห์ด้วย AI: {str(e)}", "summaries": []}
 
+def proofread_thai(analysis, summaries):
+    """ตรวจตัวสะกด/วรรณยุกต์/ไวยากรณ์ไทยอีกรอบก่อนเผยแพร่ขึ้นเว็บ (ไม่แก้เนื้อหา)"""
+    payload = {"analysis": analysis, "summaries": summaries}
+    prompt = (
+        "ตรวจและแก้ตัวสะกด วรรณยุกต์ และไวยากรณ์ภาษาไทยใน JSON นี้ให้ถูกต้อง "
+        "ห้ามเปลี่ยนเนื้อหา ความหมาย หรือโครงสร้างประโยค แก้เฉพาะจุดที่สะกดผิดเท่านั้น "
+        "ตอบกลับเป็น JSON รูปแบบเดิมเป๊ะๆ (คีย์ analysis และ summaries จำนวนสมาชิกเท่าเดิม):\n\n"
+        + json.dumps(payload, ensure_ascii=False)
+    )
+    try:
+        r = requests.post(
+            DEEPSEEK_URL,
+            headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
+            json={
+                "model": "deepseek-chat",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0,
+                "max_tokens": 2000,
+                "response_format": {"type": "json_object"}
+            },
+            timeout=45
+        )
+        raw = r.json()['choices'][0]['message']['content']
+        parsed = json.loads(raw)
+        fixed_analysis = parsed.get("analysis") or analysis
+        fixed_summaries = parsed.get("summaries") or summaries
+        if not isinstance(fixed_summaries, list) or len(fixed_summaries) != len(summaries):
+            fixed_summaries = summaries
+        return fixed_analysis, [str(s) for s in fixed_summaries]
+    except Exception:
+        return analysis, summaries  # พิสูจน์อักษรพลาด ใช้ต้นฉบับแทน ไม่ทำให้ทั้งระบบล่ม
+
 def main():
     print("="*50)
     print("ระบบรายงานข่าวและวิเคราะห์เชิงลึก (AI-Powered Daily Report)")
@@ -292,6 +324,7 @@ def main():
         result = ask_deepseek_category(cat_name, articles)
         analysis_text = result.get("analysis", "")
         summaries = result.get("summaries", [])
+        analysis_text, summaries = proofread_thai(analysis_text, summaries)
 
         items_list = []
         for i, art in enumerate(articles):
