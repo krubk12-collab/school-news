@@ -3,17 +3,13 @@ import json
 import sys
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import zoneinfo
 
-# Read API keys from environment variables
-API_KEY = os.environ["DEEPSEEK_API_KEY"]
-NEWSAPI_KEY = os.environ["NEWSAPI_KEY"]
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY")  # ไม่บังคับ — ถ้าไม่มีก็ข้ามขั้นพิสูจน์อักษร
+import ai
 
-DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions"
-GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_PROOFREAD_MODEL = "qwen/qwen3.8-27b"  # เช็ค https://api.groq.com/openai/v1/models ถ้าโมเดลนี้หายไป
+NEWSAPI_KEY = os.environ["NEWSAPI_KEY"]
 TRUSTED_DOMAINS = "reuters.com,apnews.com,bbc.com,aljazeera.com,theguardian.com,cnn.com,npr.org"
 
 DISEASE_QUERIES = [
@@ -39,6 +35,7 @@ CATEGORY_ICONS = {
     "เทคโนโลยี": "💻",
     "ทั่วไป": "📰"
 }
+ORDERED_CATEGORIES = ["โรคระบาด", "สงคราม", "ภัยพิบัติ", "เทคโนโลยี AI", "สุขภาพ", "วิทยาศาสตร์", "เทคโนโลยี", "ทั่วไป"]
 
 def get_news():
     news = []
@@ -165,6 +162,18 @@ def get_news():
 
     return news
 
+def dedupe_news(news):
+    """ตัดข่าวซ้ำ (URL เดียวกัน หรือหัวข้อเดียวกันหลังตัดชื่อสำนักข่าวท้ายหัวข้อ) — เก็บตัวแรกที่เจอ"""
+    seen, out = set(), []
+    for n in news:
+        title = re.sub(r"\s+[-|]\s+[^-|]+$", "", n.get("title") or "").strip().lower()
+        keys = {(n.get("url") or "").strip().lower(), title} - {""}
+        if keys & seen:
+            continue
+        seen |= keys
+        out.append(n)
+    return out
+
 def group_by_category(news):
     grouped = {}
     for n in news:
@@ -175,9 +184,9 @@ def group_by_category(news):
     return grouped
 
 def reclassify_categories(news):
-    """เช็คหมวดหมู่ข่าวจริงด้วย Qwen (ผ่าน Groq) แทนป้ายที่ติดตอนดึงจาก NewsAPI
+    """เช็คหมวดหมู่ข่าวจริงด้วย AI แทนป้ายที่ติดตอนดึงจาก NewsAPI
     (ป้ายเดิมเดาจาก 'query ไหนดึงมันมา' ไม่ได้เช็คเนื้อหาจริง ทำให้ข่าวกีฬา/บันเทิงหลุดเข้าหมวดเฉพาะทางได้)"""
-    if not GROQ_API_KEY or not news:
+    if not news:
         return news
 
     categories = list(CATEGORY_ICONS.keys())
@@ -195,56 +204,32 @@ def reclassify_categories(news):
         "ตอบกลับเป็น JSON เท่านั้น รูปแบบ {\"0\": \"ชื่อหมวด\", \"1\": \"ชื่อหมวด\", ...} "
         f"ต้องมีครบทุกดัชนีตั้งแต่ 0 ถึง {len(news) - 1}\n\nรายการข่าว:\n{articles_block}"
     )
-    try:
-        r = requests.post(
-            GROQ_URL,
-            headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-            json={
-                "model": GROQ_PROOFREAD_MODEL,
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0,
-                "response_format": {"type": "json_object"}
-            },
-            timeout=60
-        )
-        raw = r.json()['choices'][0]['message']['content']
-        mapping = json.loads(raw)
-        for i, n in enumerate(news):
-            cat = mapping.get(str(i))
-            if cat in categories:
-                n["cat"] = cat
-        return news
-    except Exception:
-        return news  # จัดหมวดใหม่พลาด ใช้ป้ายเดิมจาก NewsAPI แทน ไม่ทำให้ pipeline ล่ม
+    # งานสั้น ใช้ Groq ที่ฟรีและเร็วก่อน พลาดค่อยใช้ค่ายอื่น พลาดหมดก็ใช้ป้ายเดิมจาก NewsAPI
+    mapping, _ = ai.chat_json(prompt, max_tokens=4000, temperature=0, label="reclassify",
+                              providers=("groq", "gemini", "deepseek"),
+                              validate=lambda m: None if isinstance(m, dict) else "not an object")
+    for i, n in enumerate(news):
+        cat = (mapping or {}).get(str(i))
+        if cat in categories:
+            n["cat"] = cat
+    return news
 
-def classify_disease_type(articles):
-    cats = {
-        "ไวรัสทางเดินหายใจ": ["COVID", "flu", "H5N1", "H10N3", "respiratory", "influenza"],
-        "ไวรัสเลือดออก": ["Dengue", "Marburg", "Ebola", "hemorrhagic"],
-        "ไวรัสระบบประสาท": ["Nipah", "encephalitis", "Japanese"],
-        "โรคติดต่อผิวหนัง": ["Mpox", "Monkeypox"],
-        "เชื้อดื้อยา": ["Antimicrobial", "AMR", "antibiotic"],
-        "โรคระบาดทั่วไป": ["outbreak", "pandemic", "epidemic"]
-    }
-    result = {k: [] for k in cats}
-    result["อื่นๆ"] = []
-    for n in articles:
-        title = n.get('title') or ''
-        desc = n.get('desc') or ''
-        t = (title + desc).lower()
-        assigned = False
-        for cat, kws in cats.items():
-            for kw in kws:
-                if kw.lower() in t:
-                    result[cat].append(n)
-                    assigned = True
-                    break
-            if assigned: break
-        if not assigned:
-            result["อื่นๆ"].append(n)
-    return result
+def category_validator(n):
+    """คำตอบต้องมีบทวิเคราะห์จริง และสรุป/รายละเอียดครบเท่าจำนวนข่าว ห้ามมีช่องว่าง"""
+    def check(p):
+        if not isinstance(p.get("analysis"), str) or len(p["analysis"].strip()) < 50:
+            return "analysis missing or too short"
+        for k in ("summaries", "details"):
+            v = p.get(k)
+            if not isinstance(v, list) or len(v) != n:
+                return f"{k}: got {len(v) if isinstance(v, list) else 'none'}, want {n}"
+            if any(not isinstance(x, str) or not x.strip() for x in v):
+                return f"{k}: empty item"
+        return None
+    return check
 
-def ask_deepseek_category(category_name, articles):
+def analyze_category(category_name, articles):
+    """คืน {"analysis", "summaries", "details"} หรือ None ถ้าทุกค่ายล้มเหลว"""
     articles_text = ""
     for i, a in enumerate(articles, 1):
         title = a.get('title') or ''
@@ -273,8 +258,7 @@ def ask_deepseek_category(category_name, articles):
         task = "ตอบภาษาไทยตาม 3 หัวข้อดังนี้:\n1) ประเด็นสำคัญที่สุด\n2) เรื่องที่น่าสนใจ/น่าติดตาม\n3) ผลกระทบหรือประโยชน์ต่อคนไทย"
         base_tokens = 1000
 
-    # ปรับตามจำนวนข่าวจริง — ไม่งั้นหมวดที่มีข่าวเยอะ (เช่น "ทั่วไป" ที่รับข่าวไม่เข้าพวกจาก reclassify_categories)
-    # จะโดนตัด JSON กลางคันตอนสรุปข่าวครบทุกข้อ (max_tokens คงที่เดิมไม่พอ) — details เพิ่มความยาวต่อข่าวมาก จึงต้องให้พื้นที่มากกว่าเดิม
+    # ปรับตามจำนวนข่าวจริง (details ยาวต่อข่าว) — ถ้ายังถูกตัด ai.chat_json จะยิงซ้ำด้วยงบสองเท่าเอง
     max_tokens = min(6000, base_tokens + len(articles) * 250)
 
     prompt = (
@@ -293,172 +277,96 @@ def ask_deepseek_category(category_name, articles):
         f"summaries และ details ต้องมีจำนวนสมาชิกเท่ากับจำนวนข่าวพอดี ({len(articles)} ข้อ) เรียงลำดับตรงกับข่าวด้านบนทั้งคู่"
     )
 
-    try:
-        r = requests.post(
-            DEEPSEEK_URL,
-            headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
-            json={
-                "model": "deepseek-chat",
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.7,
-                "max_tokens": max_tokens,
-                "response_format": {"type": "json_object"}
-            },
-            timeout=60
-        )
-        raw = r.json()['choices'][0]['message']['content']
-        parsed = json.loads(raw)
-        analysis = parsed.get("analysis") or ""
-        summaries = parsed.get("summaries") or []
-        details = parsed.get("details") or []
-        if not isinstance(summaries, list):
-            summaries = []
-        if not isinstance(details, list):
-            details = []
-        return {"analysis": analysis, "summaries": [str(s) for s in summaries], "details": [str(d) for d in details]}
-    except Exception as e:
-        return {"analysis": f"เกิดข้อผิดพลาดในการวิเคราะห์ด้วย AI: {str(e)}", "summaries": [], "details": []}
+    parsed, _ = ai.chat_json(prompt, max_tokens=max_tokens, validate=category_validator(len(articles)), label=category_name)
+    return parsed
 
-def proofread_thai(analysis, summaries, details):
-    """ตรวจ+ขัดภาษาไทยให้เป็นสำนวนข่าวมืออาชีพก่อนเผยแพร่ขึ้นเว็บ (ไม่แก้เนื้อหา/ไม่สลับลำดับ)
-    ใช้ Groq (ฟรี) + Qwen แทน DeepSeek — คนละโมเดลกับตัวที่เขียนต้นฉบับ ตรวจข้ามกันได้ตรงกว่า และไม่กิน quota DeepSeek เพิ่ม
-    หมายเหตุ: เคยลองให้ทำหน้าที่ "จัดลำดับความสำคัญ" ในคำขอเดียวกันด้วย แต่โมเดลสับสน
-    (ตอบเป็นคำอธิบายการแก้ไขแทนเนื้อหาจริง + สลับตำแหน่ง summaries ผิด) เลยตัดออก ให้ทำเรื่องเดียวให้ชัวร์"""
-    if not GROQ_API_KEY or not summaries:
-        return analysis, summaries, details
-
-    payload = {"analysis": analysis, "summaries": summaries, "details": details}
-    prompt = (
-        "ตรวจและแก้ตัวสะกด วรรณยุกต์ ไวยากรณ์ภาษาไทยใน JSON นี้ให้ถูกต้อง "
-        "พร้อมขัดสำนวนให้เป็นภาษาข่าวมืออาชีพ กระชับ น่าเชื่อถือ (ไม่ใช่แปลตรงตัวคำต่อคำ) "
-        "รวมถึงตรวจว่าคำศัพท์เฉพาะที่แปลจากภาษาอังกฤษถูกต้องตรงความหมายเดิมหรือไม่ "
-        "(เช่น bouncy castle ต้องเป็น 'บ้านลม' หรือ 'ปราสาทลม' ไม่ใช่คำที่ประดิษฐ์ขึ้นเองอย่าง 'บ่อลม' ซึ่งไม่มีความหมายนี้) "
-        "ถ้าเจอคำแปลผิดแบบนี้ให้แก้เป็นคำที่ถูกต้องและเป็นที่รู้จักทั่วไป "
-        "ห้ามเปลี่ยนข้อเท็จจริง ตัวเลข หรือความหมายเดิมเด็ดขาด และห้ามสลับลำดับ summaries/details เด็ดขาด "
-        "(ตำแหน่งที่ 0 ต้องเป็นข่าวเดิมข้อที่ 0 เสมอ ทั้งสองลิสต์)\n"
-        "ตอบกลับเป็น JSON รูปแบบเดิมเป๊ะๆ เท่านั้น ห้ามมีข้อความอื่นนอก JSON "
-        "(คีย์ analysis, summaries, details จำนวนสมาชิกเท่าเดิมทุกลิสต์):\n\n"
-        + json.dumps(payload, ensure_ascii=False)
-    )
-    try:
-        r = requests.post(
-            GROQ_URL,
-            headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-            json={
-                "model": GROQ_PROOFREAD_MODEL,
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0,
-                "response_format": {"type": "json_object"}
-            },
-            timeout=60
-        )
-        raw = r.json()['choices'][0]['message']['content']
-        parsed = json.loads(raw)
-        fixed_analysis = parsed.get("analysis") or analysis
-        fixed_summaries = parsed.get("summaries") or summaries
-        if not isinstance(fixed_summaries, list) or len(fixed_summaries) != len(summaries):
-            fixed_summaries = summaries
-        fixed_details = parsed.get("details") or details
-        if not isinstance(fixed_details, list) or len(fixed_details) != len(details):
-            fixed_details = details
-        return fixed_analysis, [str(s) for s in fixed_summaries], [str(d) for d in fixed_details]
-    except Exception:
-        return analysis, summaries, details  # พิสูจน์อักษรพลาด ใช้ต้นฉบับแทน ไม่ทำให้ทั้งระบบล่ม
+def build_category(cat_name, articles, result):
+    """result=None (AI ล้มเหลวทุกค่าย) → โชว์แค่ข่าว ไม่มีบทวิเคราะห์ ไม่เอาข้อความ error ขึ้นเว็บ"""
+    result = result or {}
+    summaries = result.get("summaries") or []
+    details = result.get("details") or []
+    items = []
+    for i, art in enumerate(articles):
+        items.append({
+            "title": art.get('title', ''),
+            "summary_th": summaries[i] if i < len(summaries) else None,
+            "detail_th": details[i] if i < len(details) else None,
+            "source": art.get('source', ''),
+            "url": art.get('url', '')
+        })
+    return {
+        "name": cat_name,
+        "icon": CATEGORY_ICONS.get(cat_name, "📰"),
+        "count": len(articles),
+        "analysis": result.get("analysis", ""),
+        "items": items
+    }
 
 def main():
     print("="*50)
     print("ระบบรายงานข่าวและวิเคราะห์เชิงลึก (AI-Powered Daily Report)")
     print("="*50)
-    
-    print("กำลังดึงข้อมูลข่าวจาก NewsAPI...")
-    news = get_news()
-    
-    if not news:
-        print("\n⚠️ ไม่สามารถดึงข่าวปัจจุบันได้ หรือไม่มีข่าวใหม่", file=sys.stderr)
+
+    if not os.environ.get("DEEPSEEK_API_KEY"):
+        print("⚠️ ไม่มี DEEPSEEK_API_KEY", file=sys.stderr)
         sys.exit(1)
 
-    print(f"ดึงข้อมูลข่าวเสร็จสิ้น: ทั้งหมด {len(news)} ข่าว")
+    print("กำลังดึงข้อมูลข่าวจาก NewsAPI...")
+    raw_news = get_news()
 
-    print("กำลังตรวจสอบ/จัดหมวดหมู่ข่าวใหม่ด้วย Qwen...")
+    if not raw_news:
+        print("\n⚠️ ไม่สามารถดึงข่าวปัจจุบันได้ หรือไม่มีข่าวใหม่ (NewsAPI quota หมด?) — คงข่าวเดิมบนเว็บไว้", file=sys.stderr)
+        sys.exit(1)
+
+    news = dedupe_news(raw_news)
+    print(f"ดึงข่าวได้ {len(raw_news)} ข่าว ตัดซ้ำเหลือ {len(news)} ข่าว")
+
+    print("กำลังตรวจสอบ/จัดหมวดหมู่ข่าวใหม่...")
     news = reclassify_categories(news)
-
-    # จัดกลุ่มตามหมวดหมู่ภาษาไทย
     grouped = group_by_category(news)
-    
-    # ส่งข้อความวิเคราะห์รายหมวดด้วย DeepSeek
-    categories_list = []
-    
-    # กำหนดลำดับหมวดหมู่
-    ordered_categories = ["โรคระบาด", "สงคราม", "ภัยพิบัติ", "เทคโนโลยี AI", "สุขภาพ", "วิทยาศาสตร์", "เทคโนโลยี", "ทั่วไป"]
-    
-    for cat_name in ordered_categories:
-        if cat_name not in grouped or not grouped[cat_name]:
-            continue
-            
-        articles = grouped[cat_name]
-        print(f"กำลังวิเคราะห์หมวด '{cat_name}' ด้วย DeepSeek AI ({len(articles)} ข่าว)...")
-        result = ask_deepseek_category(cat_name, articles)
-        analysis_text = result.get("analysis", "")
-        summaries = result.get("summaries", [])
-        details = result.get("details", [])
-        analysis_text, summaries, details = proofread_thai(analysis_text, summaries, details)
 
-        items_list = []
-        for i, art in enumerate(articles):
-            summary_th = summaries[i] if i < len(summaries) and summaries[i] else None
-            detail_th = details[i] if i < len(details) and details[i] else None
-            items_list.append({
-                "title": art.get('title', ''),
-                "summary_th": summary_th,   # สรุปสั้นภาษาไทย จาก DeepSeek — None ถ้า AI ตอบไม่ครบ/parse ไม่ได้
-                "detail_th": detail_th,     # รายละเอียดภาษาไทย 2-4 ประโยค ให้กดขยายอ่านในหน้าโดยไม่ต้องออกไปอ่านต้นฉบับ
-                "source": art.get('source', ''),
-                "url": art.get('url', '')
-            })
-
-        categories_list.append({
-            "name": cat_name,
-            "icon": CATEGORY_ICONS.get(cat_name, "📰"),
-            "count": len(articles),
-            "analysis": analysis_text,
-            "items": items_list
-        })
-        
-    if not categories_list:
+    cats = [c for c in ORDERED_CATEGORIES if grouped.get(c)]
+    if not cats:
         print("\n⚠️ ไม่มีข่าวในหมวดหมู่ที่ต้องการ", file=sys.stderr)
         sys.exit(1)
-        
-    # สร้างโครงสร้าง JSON ตามสเปก
+
+    print(f"กำลังวิเคราะห์ {len(cats)} หมวดพร้อมกัน...")
+    with ThreadPoolExecutor(max_workers=len(cats)) as pool:
+        results = list(pool.map(lambda c: analyze_category(c, grouped[c]), cats))
+
+    usage = ai.usage_summary()
+    failed = [c for c, r in zip(cats, results) if r is None]
+    print(f"การเรียก AI: {json.dumps(usage, ensure_ascii=False)}")
+    if failed:
+        print(f"⚠️ หมวดที่ AI ล้มเหลวทุกค่าย (โชว์แค่ข่าว): {', '.join(failed)}", file=sys.stderr)
+    if len(failed) == len(cats):
+        print("⚠️ ล้มเหลวทุกหมวด — ไม่เขียนทับข่าวเดิมบนเว็บ", file=sys.stderr)
+        sys.exit(1)
+
+    categories_list = [build_category(c, grouped[c], r) for c, r in zip(cats, results)]
+
     tz = zoneinfo.ZoneInfo("Asia/Bangkok")
     now = datetime.now(tz)
-    
-    th_year = now.year + 543
-    date_str = f"{th_year:04d}-{now.month:02d}-{now.day:02d}"
-    
+    date_str = f"{now.year + 543:04d}-{now.month:02d}-{now.day:02d}"
     output_data = {
         "date": date_str,
         "generated_at": now.isoformat(),
         "categories": categories_list
     }
-    
-    # เขียนไฟล์ลง data/
+
     os.makedirs("data", exist_ok=True)
-    
-    daily_file = f"data/{date_str}.json"
-    latest_file = "data/latest.json"
-    
     try:
-        with open(daily_file, "w", encoding="utf-8") as f:
-            json.dump(output_data, f, ensure_ascii=False, indent=2)
-        print(f"บันทึกไฟล์รายวันสำเร็จ: {daily_file}")
-        
-        with open(latest_file, "w", encoding="utf-8") as f:
-            json.dump(output_data, f, ensure_ascii=False, indent=2)
-        print(f"บันทึกไฟล์ล่าสุดสำเร็จ: {latest_file}")
-        
+        for path in (f"data/{date_str}.json", "data/latest.json"):
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(output_data, f, ensure_ascii=False, indent=2)
+            print(f"บันทึกไฟล์สำเร็จ: {path}")
+        with open("data/usage.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps({"generated_at": now.isoformat(), "articles_raw": len(raw_news),
+                                "articles": len(news), "failed_categories": failed, **usage}, ensure_ascii=False) + "\n")
     except Exception as e:
-        print(f"เกิดข้อผิดพลาดในการบันทึกไฟล์ JSON: {e}", file=sys.stderr)
+        print(f"เกิดข้อผิดพลาดในการบันทึกไฟล์: {e}", file=sys.stderr)
         sys.exit(1)
-        
+
     print("การดำเนินการทั้งหมดเสร็จสิ้นอย่างสมบูรณ์!")
 
 if __name__ == "__main__":
