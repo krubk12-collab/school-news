@@ -274,21 +274,23 @@ def ask_deepseek_category(category_name, articles):
         base_tokens = 1000
 
     # ปรับตามจำนวนข่าวจริง — ไม่งั้นหมวดที่มีข่าวเยอะ (เช่น "ทั่วไป" ที่รับข่าวไม่เข้าพวกจาก reclassify_categories)
-    # จะโดนตัด JSON กลางคันตอนสรุปข่าวครบทุกข้อ (max_tokens คงที่เดิมไม่พอ)
-    max_tokens = min(4000, base_tokens + len(articles) * 90)
+    # จะโดนตัด JSON กลางคันตอนสรุปข่าวครบทุกข้อ (max_tokens คงที่เดิมไม่พอ) — details เพิ่มความยาวต่อข่าวมาก จึงต้องให้พื้นที่มากกว่าเดิม
+    max_tokens = min(6000, base_tokens + len(articles) * 250)
 
     prompt = (
         f"{role} วิเคราะห์ข่าวต่อไปนี้ (หมวด {category_name}):\n{articles_text}\n"
         f"{task}\n\n"
         f"ในส่วนบทวิเคราะห์ ต้องกล่าวถึงทุกประเด็น/เหตุการณ์ที่ปรากฏในข่าวด้านบนอย่างน้อยหนึ่งครั้ง "
         f"อนุญาตให้รวมข่าวที่รายงานเรื่องเดียวกันจากหลายสำนักไว้เป็นประเด็นเดียวได้ แต่ห้ามละเว้นเหตุการณ์ใดไปทั้งหมด\n\n"
-        f"นอกจากนี้ ให้สรุปข่าวแต่ละข้อ (ตามลำดับข้อ 1 ถึง {len(articles)} ด้านบน) เป็นภาษาไทยสั้นกระชับ "
-        f"ไม่เกิน 15 คำต่อข้อ อ่านแล้วเข้าใจทันที ไม่ใช่แปลตรงตัวจากหัวข้อภาษาอังกฤษ "
-        f"ใช้คำศัพท์ไทยที่ถูกต้องและเป็นที่รู้จักทั่วไปสำหรับของ/แนวคิดต่างประเทศ (เช่น bouncy castle = บ้านลม หรือ ปราสาทลม "
-        f"ไม่ใช่คำที่ประดิษฐ์ขึ้นเองอย่าง 'บ่อลม') หากไม่แน่ใจศัพท์เฉพาะ ให้บรรยายสั้นๆ ดีกว่าเดาคำผิด\n\n"
+        f"นอกจากนี้ สำหรับข่าวแต่ละข้อ (ตามลำดับข้อ 1 ถึง {len(articles)} ด้านบน) ให้เขียน 2 อย่าง:\n"
+        f"1. สรุปสั้น (summaries) ภาษาไทยกระชับ ไม่เกิน 15 คำ อ่านแล้วเข้าใจทันที\n"
+        f"2. รายละเอียด (details) ภาษาไทย 2-4 ประโยค (ประมาณ 40-70 คำ) ขยายความจากคำโปรยข่าวให้อ่านเข้าใจครบถ้วนโดยไม่ต้องกดออกไปอ่านต้นฉบับ "
+        f"ครอบคลุม ใคร/เกิดอะไร/ที่ไหน/ผลกระทบ เท่าที่ข้อมูลที่ให้มามี ห้ามเดาข้อมูลที่ไม่มีในคำโปรยเพิ่มเอง\n\n"
+        f"ทั้ง summaries และ details ต้องไม่ใช่แปลตรงตัวจากหัวข้อภาษาอังกฤษ และใช้คำศัพท์ไทยที่ถูกต้องและเป็นที่รู้จักทั่วไปสำหรับของ/แนวคิดต่างประเทศ "
+        f"(เช่น bouncy castle = บ้านลม หรือ ปราสาทลม ไม่ใช่คำที่ประดิษฐ์ขึ้นเองอย่าง 'บ่อลม') หากไม่แน่ใจศัพท์เฉพาะ ให้บรรยายสั้นๆ ดีกว่าเดาคำผิด\n\n"
         f"ตอบกลับเป็น JSON เท่านั้น ห้ามมีข้อความอื่นนอก JSON รูปแบบนี้เป๊ะๆ:\n"
-        f'{{"analysis": "เนื้อหาวิเคราะห์ตามหัวข้อข้างต้นทั้งหมด", "summaries": ["สรุปข่าวข้อ 1", "สรุปข่าวข้อ 2", ...]}}\n'
-        f"summaries ต้องมีจำนวนสมาชิกเท่ากับจำนวนข่าวพอดี ({len(articles)} ข้อ) เรียงลำดับตรงกับข่าวด้านบน"
+        f'{{"analysis": "เนื้อหาวิเคราะห์ตามหัวข้อข้างต้นทั้งหมด", "summaries": ["สรุปข่าวข้อ 1", ...], "details": ["รายละเอียดข่าวข้อ 1", ...]}}\n'
+        f"summaries และ details ต้องมีจำนวนสมาชิกเท่ากับจำนวนข่าวพอดี ({len(articles)} ข้อ) เรียงลำดับตรงกับข่าวด้านบนทั้งคู่"
     )
 
     try:
@@ -302,37 +304,40 @@ def ask_deepseek_category(category_name, articles):
                 "max_tokens": max_tokens,
                 "response_format": {"type": "json_object"}
             },
-            timeout=45
+            timeout=60
         )
         raw = r.json()['choices'][0]['message']['content']
         parsed = json.loads(raw)
         analysis = parsed.get("analysis") or ""
         summaries = parsed.get("summaries") or []
+        details = parsed.get("details") or []
         if not isinstance(summaries, list):
             summaries = []
-        return {"analysis": analysis, "summaries": [str(s) for s in summaries]}
+        if not isinstance(details, list):
+            details = []
+        return {"analysis": analysis, "summaries": [str(s) for s in summaries], "details": [str(d) for d in details]}
     except Exception as e:
-        return {"analysis": f"เกิดข้อผิดพลาดในการวิเคราะห์ด้วย AI: {str(e)}", "summaries": []}
+        return {"analysis": f"เกิดข้อผิดพลาดในการวิเคราะห์ด้วย AI: {str(e)}", "summaries": [], "details": []}
 
-def proofread_thai(analysis, summaries):
+def proofread_thai(analysis, summaries, details):
     """ตรวจ+ขัดภาษาไทยให้เป็นสำนวนข่าวมืออาชีพก่อนเผยแพร่ขึ้นเว็บ (ไม่แก้เนื้อหา/ไม่สลับลำดับ)
     ใช้ Groq (ฟรี) + Qwen แทน DeepSeek — คนละโมเดลกับตัวที่เขียนต้นฉบับ ตรวจข้ามกันได้ตรงกว่า และไม่กิน quota DeepSeek เพิ่ม
     หมายเหตุ: เคยลองให้ทำหน้าที่ "จัดลำดับความสำคัญ" ในคำขอเดียวกันด้วย แต่โมเดลสับสน
     (ตอบเป็นคำอธิบายการแก้ไขแทนเนื้อหาจริง + สลับตำแหน่ง summaries ผิด) เลยตัดออก ให้ทำเรื่องเดียวให้ชัวร์"""
     if not GROQ_API_KEY or not summaries:
-        return analysis, summaries
+        return analysis, summaries, details
 
-    payload = {"analysis": analysis, "summaries": summaries}
+    payload = {"analysis": analysis, "summaries": summaries, "details": details}
     prompt = (
         "ตรวจและแก้ตัวสะกด วรรณยุกต์ ไวยากรณ์ภาษาไทยใน JSON นี้ให้ถูกต้อง "
         "พร้อมขัดสำนวนให้เป็นภาษาข่าวมืออาชีพ กระชับ น่าเชื่อถือ (ไม่ใช่แปลตรงตัวคำต่อคำ) "
         "รวมถึงตรวจว่าคำศัพท์เฉพาะที่แปลจากภาษาอังกฤษถูกต้องตรงความหมายเดิมหรือไม่ "
         "(เช่น bouncy castle ต้องเป็น 'บ้านลม' หรือ 'ปราสาทลม' ไม่ใช่คำที่ประดิษฐ์ขึ้นเองอย่าง 'บ่อลม' ซึ่งไม่มีความหมายนี้) "
         "ถ้าเจอคำแปลผิดแบบนี้ให้แก้เป็นคำที่ถูกต้องและเป็นที่รู้จักทั่วไป "
-        "ห้ามเปลี่ยนข้อเท็จจริง ตัวเลข หรือความหมายเดิมเด็ดขาด และห้ามสลับลำดับ summaries เด็ดขาด "
-        "(ตำแหน่งที่ 0 ต้องเป็นข่าวเดิมข้อที่ 0 เสมอ)\n"
+        "ห้ามเปลี่ยนข้อเท็จจริง ตัวเลข หรือความหมายเดิมเด็ดขาด และห้ามสลับลำดับ summaries/details เด็ดขาด "
+        "(ตำแหน่งที่ 0 ต้องเป็นข่าวเดิมข้อที่ 0 เสมอ ทั้งสองลิสต์)\n"
         "ตอบกลับเป็น JSON รูปแบบเดิมเป๊ะๆ เท่านั้น ห้ามมีข้อความอื่นนอก JSON "
-        "(คีย์ analysis และ summaries จำนวนสมาชิกเท่าเดิม):\n\n"
+        "(คีย์ analysis, summaries, details จำนวนสมาชิกเท่าเดิมทุกลิสต์):\n\n"
         + json.dumps(payload, ensure_ascii=False)
     )
     try:
@@ -345,7 +350,7 @@ def proofread_thai(analysis, summaries):
                 "temperature": 0,
                 "response_format": {"type": "json_object"}
             },
-            timeout=45
+            timeout=60
         )
         raw = r.json()['choices'][0]['message']['content']
         parsed = json.loads(raw)
@@ -353,9 +358,12 @@ def proofread_thai(analysis, summaries):
         fixed_summaries = parsed.get("summaries") or summaries
         if not isinstance(fixed_summaries, list) or len(fixed_summaries) != len(summaries):
             fixed_summaries = summaries
-        return fixed_analysis, [str(s) for s in fixed_summaries]
+        fixed_details = parsed.get("details") or details
+        if not isinstance(fixed_details, list) or len(fixed_details) != len(details):
+            fixed_details = details
+        return fixed_analysis, [str(s) for s in fixed_summaries], [str(d) for d in fixed_details]
     except Exception:
-        return analysis, summaries  # พิสูจน์อักษรพลาด ใช้ต้นฉบับแทน ไม่ทำให้ทั้งระบบล่ม
+        return analysis, summaries, details  # พิสูจน์อักษรพลาด ใช้ต้นฉบับแทน ไม่ทำให้ทั้งระบบล่ม
 
 def main():
     print("="*50)
@@ -392,14 +400,17 @@ def main():
         result = ask_deepseek_category(cat_name, articles)
         analysis_text = result.get("analysis", "")
         summaries = result.get("summaries", [])
-        analysis_text, summaries = proofread_thai(analysis_text, summaries)
+        details = result.get("details", [])
+        analysis_text, summaries, details = proofread_thai(analysis_text, summaries, details)
 
         items_list = []
         for i, art in enumerate(articles):
             summary_th = summaries[i] if i < len(summaries) and summaries[i] else None
+            detail_th = details[i] if i < len(details) and details[i] else None
             items_list.append({
                 "title": art.get('title', ''),
                 "summary_th": summary_th,   # สรุปสั้นภาษาไทย จาก DeepSeek — None ถ้า AI ตอบไม่ครบ/parse ไม่ได้
+                "detail_th": detail_th,     # รายละเอียดภาษาไทย 2-4 ประโยค ให้กดขยายอ่านในหน้าโดยไม่ต้องออกไปอ่านต้นฉบับ
                 "source": art.get('source', ''),
                 "url": art.get('url', '')
             })
