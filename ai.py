@@ -39,7 +39,7 @@ def _is_peak(dt):
     return dt.weekday() < 5 and (1 <= dt.hour < 4 or 6 <= dt.hour < 10)
 
 
-def chat_json(prompt, max_tokens, validate=None, providers=("deepseek", "gemini", "groq"), temperature=0.7, label=""):
+def chat_json(prompt, max_tokens, validate=None, providers=("deepseek", "groq"), temperature=0.7, label=""):
     """คืน (dict ที่ผ่านการตรวจ, ชื่อค่าย) หรือ (None, None) ถ้าทุกค่ายล้มเหลว
     validate(dict) -> None ถ้าผ่าน หรือข้อความบอกปัญหา (จะข้ามไปค่ายถัดไป)"""
     for name in providers:

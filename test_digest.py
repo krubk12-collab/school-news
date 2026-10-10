@@ -29,8 +29,8 @@ def setup_function():
 def test_falls_back_to_next_provider_on_http_error():
     with patch("ai.requests.post", side_effect=[resp(500), resp(content='{"x": 1}')]) as p:
         out, who = ai.chat_json("q", 100)
-    assert (out, who) == ({"x": 1}, "gemini")
-    assert [host(c) for c in p.call_args_list] == ["api.deepseek.com", "generativelanguage.googleapis.com"]
+    assert (out, who) == ({"x": 1}, "groq")
+    assert [host(c) for c in p.call_args_list] == ["api.deepseek.com", "api.groq.com"]
 
 
 def test_retries_same_provider_with_double_tokens_when_cut_off():
@@ -43,28 +43,27 @@ def test_retries_same_provider_with_double_tokens_when_cut_off():
 def test_invalid_answer_moves_to_next_provider():
     with patch("ai.requests.post", side_effect=[resp(content='{"x": 0}'), resp(content='{"x": 3}')]):
         out, who = ai.chat_json("q", 100, validate=lambda d: None if d["x"] else "zero")
-    assert (out, who) == ({"x": 3}, "gemini")
+    assert (out, who) == ({"x": 3}, "groq")
 
 
 def test_all_providers_fail_returns_none():
     with patch("ai.requests.post", return_value=resp(500)):
         assert ai.chat_json("q", 100) == (None, None)
-    assert ai.usage_summary()["failed_calls"] == 3
+    assert ai.usage_summary()["failed_calls"] == 2
 
 
 def test_skips_provider_without_key():
     with patch.dict(os.environ, {"DEEPSEEK_API_KEY": ""}), \
          patch("ai.requests.post", return_value=resp(content='{"x": 1}')) as p:
         _, who = ai.chat_json("q", 100)
-    assert who == "gemini" and p.call_count == 1
+    assert who == "groq" and p.call_count == 1
 
 
-def test_thinking_turned_off_for_deepseek_and_gemini():
-    with patch("ai.requests.post", side_effect=[resp(500), resp(content='{"x": 1}')]) as p:
+def test_thinking_turned_off_for_deepseek():
+    with patch("ai.requests.post", return_value=resp(content='{"x": 1}')) as p:
         ai.chat_json("q", 100)
-    deepseek_body, gemini_body = (c.kwargs["json"] for c in p.call_args_list)
-    assert deepseek_body["model"] == "deepseek-flash" and deepseek_body["thinking"] == {"type": "disabled"}
-    assert gemini_body["reasoning_effort"] == "none"
+    body = p.call_args_list[0].kwargs["json"]
+    assert body["model"] == "deepseek-flash" and body["thinking"] == {"type": "disabled"}
 
 
 def test_usage_cost_half_price_off_peak():

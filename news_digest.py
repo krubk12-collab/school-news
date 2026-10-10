@@ -206,7 +206,7 @@ def reclassify_categories(news):
     )
     # งานสั้น ใช้ Groq ที่ฟรีและเร็วก่อน พลาดค่อยใช้ค่ายอื่น พลาดหมดก็ใช้ป้ายเดิมจาก NewsAPI
     mapping, _ = ai.chat_json(prompt, max_tokens=4000, temperature=0, label="reclassify",
-                              providers=("groq", "gemini", "deepseek"),
+                              providers=("groq", "deepseek"),
                               validate=lambda m: None if isinstance(m, dict) else "not an object")
     for i, n in enumerate(news):
         cat = (mapping or {}).get(str(i))
