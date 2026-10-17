@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 import requests
 
+HUB_URL = "https://ai-hub.krubk12.workers.dev/v1/chat/completions"
 PROVIDERS = {
     # deepseek-flash เปิดโหมดคิดเป็นค่าเริ่มต้น: โทเค็นคิดกินงบ max_tokens จนคำตอบถูกตัด + แพงขึ้น 3-4 เท่า
     # (วัดจริง 13 ก.ย. 69: 14/16 ครั้งถูกตัด) ชื่อเก่า deepseek-chat เคยเป็นแบบไม่คิด แต่ไม่อยู่ในเอกสารแล้ว
@@ -19,6 +20,18 @@ PROVIDERS = {
     "groq": {"url": "https://api.groq.com/openai/v1/chat/completions", "model": "qwen/qwen3.8-27b",
              "key_env": "GROQ_API_KEY", "extra": {}},
 }
+# ai-hub (Cloudflare Worker) มาก่อน — นับโทเค็นให้ /apihub · hub ล่มก็ตกไปเรียกค่ายตรงด้วยคีย์เดิม
+# ชื่อ "hub:<ค่าย>" — usage_summary นับรวมกับค่ายจริง
+for _n in ("deepseek", "groq"):
+    _p = PROVIDERS[_n]
+    PROVIDERS[f"hub:{_n}"] = {**_p, "url": HUB_URL, "key_env": "AI_HUB_TOKEN",
+                              "model": _p["model"] if _n == "deepseek" else f"groq:{_p['model']}"}
+
+
+def _chain(providers):
+    """ใส่ hub:<ค่าย> นำหน้าค่ายแรกที่ hub รองรับ"""
+    first = next((n for n in providers if f"hub:{n}" in PROVIDERS), None)
+    return ((f"hub:{first}",) if first else ()) + tuple(providers)
 MAX_TOKENS_CAP = 16000
 
 # ราคา deepseek-flash ต่อ 1M โทเค็น (USD) ช่วงปกติ จาก api-docs.deepseek.com/quick_start/pricing ณ 13 ก.ย. 69
@@ -42,7 +55,7 @@ def _is_peak(dt):
 def chat_json(prompt, max_tokens, validate=None, providers=("deepseek", "groq"), temperature=0.7, label=""):
     """คืน (dict ที่ผ่านการตรวจ, ชื่อค่าย) หรือ (None, None) ถ้าทุกค่ายล้มเหลว
     validate(dict) -> None ถ้าผ่าน หรือข้อความบอกปัญหา (จะข้ามไปค่ายถัดไป)"""
-    for name in providers:
+    for name in _chain(providers):
         p = PROVIDERS[name]
         key = os.environ.get(p["key_env"])
         if not key:
@@ -92,7 +105,7 @@ def usage_summary(now=None):
     now = now or datetime.now(timezone.utc)
     by = {}
     for rec in USAGE:
-        b = by.setdefault(rec["provider"], {"calls": 0, "failed": 0, "prompt_tokens": 0, "completion_tokens": 0})
+        b = by.setdefault(rec["provider"].split(":")[-1], {"calls": 0, "failed": 0, "prompt_tokens": 0, "completion_tokens": 0})
         b["calls"] += 1
         b["failed"] += 0 if rec["ok"] else 1
         b["prompt_tokens"] += rec["prompt_tokens"]
@@ -102,4 +115,4 @@ def usage_summary(now=None):
     cost = (ds["prompt_tokens"] * DEEPSEEK_PEAK_PRICE["input"] + ds["completion_tokens"] * DEEPSEEK_PEAK_PRICE["output"]) / 1e6 * factor
     return {"calls": len(USAGE), "failed_calls": sum(1 for r in USAGE if not r["ok"]),
             "by_provider": by, "deepseek_cost_usd": round(cost, 5), "peak_price": factor == 1,
-            "fallbacks": sorted({r["label"] for r in USAGE if r["ok"] and r["provider"] != "deepseek" and r["label"] != "reclassify"})}
+            "fallbacks": sorted({r["label"] for r in USAGE if r["ok"] and r["provider"].split(":")[-1] != "deepseek" and r["label"] != "reclassify"})}

@@ -118,3 +118,13 @@ if __name__ == "__main__":
         setup_function()
         t()
     print(f"OK: {len(tests)} tests passed")
+
+
+def test_hub_first_then_direct_when_hub_down():
+    with patch.dict(os.environ, {"AI_HUB_TOKEN": "t"}), \
+         patch("ai.requests.post", side_effect=[resp(502), resp(content='{"x": 1}')]) as p:
+        out, who = ai.chat_json("q", 100, providers=("groq", "deepseek"))
+    assert (out, who) == ({"x": 1}, "groq")
+    assert [host(c) for c in p.call_args_list] == ["ai-hub.krubk12.workers.dev", "api.groq.com"]
+    assert p.call_args_list[0].kwargs["json"]["model"] == "groq:qwen/qwen3.8-27b"
+    assert ai.usage_summary()["by_provider"]["groq"]["calls"] == 2
